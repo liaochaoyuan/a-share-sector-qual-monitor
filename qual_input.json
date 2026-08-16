@@ -1,0 +1,50 @@
+{
+  "共封装光学": {
+    "catalyst_valid": true,
+    "catalyst_strength": 90,
+    "chain_position": "上游光芯片/激光器紧缺 + 中游光模块/交换机模组",
+    "multi_resonance": true,
+    "priority": "全球级供给变革(英伟达CPO量产) + 行业级突破",
+    "policy_negative": false,
+    "stock_negatives": [],
+    "sentiment": "长期主线(AI算力迭代+机构批量布局+主线资金切换)",
+    "expected_days": 3,
+    "note": "英伟达8/3-8/14宣布Spectrum-X CPO/Ethernet Photonics全面量产并向伙伴出货；8/4板块涨6.76%几十只涨停，8/14光模块指数+2.78%多股涨停；9月CIOE/云栖/ECOC三大展会为新增催化窗口。警惕：涨幅大、拥挤度高，注意产业链局部回调而非整条退潮。"
+  },
+  "创新药": {
+    "catalyst_valid": true,
+    "catalyst_strength": 85,
+    "chain_position": "中游CXO(卖水人)/下游创新药企",
+    "multi_resonance": true,
+    "priority": "国家级战略政策(生物医药新兴支柱+医保商保双目录) + 行业级突破",
+    "policy_negative": false,
+    "stock_negatives": [],
+    "sentiment": "长期主线(政策+业绩兑现+BD出海，从估值驱动转业绩驱动)",
+    "expected_days": 3,
+    "note": "2026政府工作报告首提生物医药新兴支柱；新版基药目录8年首纳16种创新药；集采豁免专利期创新药；上半年License-out 997亿美元创新高；8/10百花医药五连板、10股涨停。警惕：板块已累积较大涨幅，内部分化。"
+  },
+  "存储芯片": {
+    "catalyst_valid": true,
+    "catalyst_strength": 85,
+    "chain_position": "上游DRAM/HBM(供不应求) + 中游模组/封测",
+    "multi_resonance": true,
+    "priority": "全球级供给变革(AI算力虹吸产能) + 行业级突破",
+    "policy_negative": false,
+    "stock_negatives": [],
+    "sentiment": "长期主线(涨价超级周期，但转入结构性分化)",
+    "expected_days": 2,
+    "note": "AI算力拉动DRAM/HBM供不应求，TrendForce供需缺口-1~-2%延续至2027；铠侠/三星/美光业绩爆发；三大原厂2027产能售罄；8/5板块涨停潮近30只涨停。分化：NAND消费端或走弱，HBM最紧缺。警惕涨幅与涨价节奏放缓。"
+  },
+  "稀土永磁": {
+    "catalyst_valid": true,
+    "catalyst_strength": 80,
+    "chain_position": "上游稀土资源/中游高性能钕铁硼磁材",
+    "multi_resonance": true,
+    "priority": "国家级战略政策(战略矿产目录+出口管制) + 全球供给变革",
+    "policy_negative": false,
+    "stock_negatives": [],
+    "sentiment": "长期战略品属性(政策管控+供需缺口，周期品向战略品演进)",
+    "expected_days": 2,
+    "note": "工信部等八部门稳增长方案扶持高端稀土永磁；稀土总量管控供给刚性；中重稀土出口管制；氧化镨钕上半年均价同比+73.6%；8/7中国稀土涨停多股跟涨。警惕：周期品属性，价格受管控与补库节奏影响。"
+  }
+}

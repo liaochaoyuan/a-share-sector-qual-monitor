@@ -1,0 +1,13 @@
+# 本地配置（含真实密钥，绝不入库）
+push_config.json
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 本地运行日志
+*.log
+loop_stdout.log
+run_log.txt
+breakout_trigger_log.txt
+qualification_run_log.txt

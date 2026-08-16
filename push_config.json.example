@@ -1,0 +1,8 @@
+{
+  "serverchan_sendkey": "在此粘贴你的Server酱SENDKEY（https://sct.ftqq.com/ 扫码登录后复制）",
+  "serverchan_api": "sctapi",
+  "sms_voice_webhook": "",
+  "sms_voice_method": "POST",
+  "sms_voice_headers": "",
+  "sms_voice_body_tmpl": "{\"text\":\"{title}\\n{desp}\"}"
+}
