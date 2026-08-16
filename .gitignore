@@ -11,3 +11,6 @@ loop_stdout.log
 run_log.txt
 breakout_trigger_log.txt
 qualification_run_log.txt
+
+# 突破监控运行时状态（常驻进程本地生成，不入库；达标监控的 qualification_state.json 由 workflow 持久化，保留）
+sector_breakout_state.json
