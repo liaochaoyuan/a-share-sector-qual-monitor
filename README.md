@@ -73,3 +73,19 @@ python sector_qualification_analyzer.py --selftest # 逻辑自检
 - 调试：`python sector_breakout_monitor.py --once`（单次检查） / `--selftest`（逻辑自检）。
 
 > 与达标监控分工：达标 6 规则（趋势/持续性）→ GitHub Actions 每 10 分钟；板块突破 +1%（即时强度）→ 常驻进程实时。两者互不冲突。
+
+### 轻量云 / 本机常驻部署（实现「马上」推送）
+1. 把仓库 clone / scp 到常驻机（如 `/opt/sector-monitor`）。
+2. 配置 SENDKEY：在目录内建 `.env` 文件，写 `SERVERCHAN_SENDKEY=你的Key`（与达标监控共用同一 Key；`.env` 不入库）。
+3. 方式一 · systemd（推荐，开机自启）：
+   ```bash
+   sudo cp sector-breakout.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now sector-breakout
+   tail -f /opt/sector-monitor/breakout.log
+   ```
+4. 方式二 · nohup 简易常驻：
+   ```bash
+   nohup ./run_breakout.sh >/dev/null 2>&1 &
+   ```
+> 轻量云推荐 1 核 1G Ubuntu，零第三方依赖（Python3 自带即可）。与达标监控的 GitHub Actions 互不冲突、各管各的。

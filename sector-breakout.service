@@ -1,0 +1,18 @@
+[Unit]
+Description=A股板块突破实时盯盘 (Server酱微信推送)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sector-monitor
+ExecStart=/usr/bin/python3 /opt/sector-monitor/sector_breakout_monitor.py
+Restart=always
+RestartSec=10
+# SENDKEY 从同目录 .env 读取（不入库）；也可直接改成 Environment=SERVERCHAN_SENDKEY=你的Key
+EnvironmentFile=-/opt/sector-monitor/.env
+StandardOutput=append:/opt/sector-monitor/breakout.log
+StandardError=append:/opt/sector-monitor/breakout.log
+
+[Install]
+WantedBy=multi-user.target
