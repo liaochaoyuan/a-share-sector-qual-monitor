@@ -1,0 +1,55 @@
+name: A股 板块/个股突破监控 (5分钟级)
+
+on:
+  # 每 5 分钟触发一次（标准 cron，UTC 时区）。
+  # 北京时间 = UTC+8，交易日 09:25-15:00 = UTC 01:25-07:00，故限制 1-7 点 + 周一至周五，
+  # 避免隔夜空跑；脚本内部再做一次北京时间交易时段兜底判断。
+  schedule:
+    - cron: "*/5 1-7 * * 1-5"
+  # 允许在 Actions 页面手动触发，方便调试
+  workflow_dispatch: {}
+
+# 同一时间只跑一个 job，避免并发写状态冲突
+concurrency:
+  group: breakout-monitor
+  cancel-in-progress: false
+
+# 允许 job 把状态文件 commit 回仓库（跨 cron 调用保持「当天去重」）
+permissions:
+  contents: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run breakout monitor (single pass)
+        env:
+          # Server酱 SENDKEY 通过仓库 Secrets 注入，永远不会出现在代码/日志里
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+        run: python3 breakout_monitor.py --once
+
+      - name: Persist state (commit breakout_state.json if changed)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          if [[ -n "$(git status --porcelain breakout_state.json)" ]]; then
+            git add breakout_state.json
+            git commit -m "chore: auto-persist breakout state [skip ci]"
+            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
+            echo "STATE_COMMITTED"
+          else
+            echo "STATE_UNCHANGED"
+          fi
