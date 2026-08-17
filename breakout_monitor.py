@@ -7,7 +7,7 @@
 监控对象：all_sectors_pool.csv 中的 4 板块 39 只个股
 触发规则：
   A. 板块突破：某板块「当日平均涨幅」首次 >= +1.0%  → 立即推送（当天每板块去重一次）
-  B. 个股突破：某只个股「当日涨幅」首次 >= +5.0%（或涨停）→ 立即推送（当天每股票去重一次）
+  B. 个股突破：某只个股「当日涨幅」首次 >= +3.0%（或涨停）→ 立即推送（当天每股票去重一次）
 推送：复用 push_utils（Server酱微信主通道；SENDKEY 来自环境变量 SERVERCHAN_SENDKEY / push_config.json）
 状态持久化：breakout_state.json（提交回仓库，跨 cron 调用保持去重；每日北京时间自动重置）
 运行：
@@ -31,7 +31,7 @@ POOL_CSV = os.path.join(BASE, "all_sectors_pool.csv")
 STATE_FILE = os.path.join(BASE, "breakout_state.json")
 
 SECTOR_BREAKOUT_PCT = 1.0   # 板块平均涨幅突破阈值（+1%）
-STOCK_BREAKOUT_PCT = 5.0    # 个股涨幅突破阈值（+5%）；另含涨停判定
+STOCK_BREAKOUT_PCT = 3.0    # 个股涨幅突破阈值（+3%）；另含涨停判定
 TRADING_START = (9, 25)
 TRADING_END = (15, 0)
 SPOT_URL = "https://qt.gtimg.cn/q="
@@ -226,7 +226,7 @@ def build_message(new_sectors, new_stocks, date):
             lines.append(f"• {s}：板块平均 +{avg:.2f}%（{n} 只样本）领涨 {top}")
         lines.append("")
     if new_stocks:
-        lines.append("【🚀 个股突破 +5% / 涨停】")
+        lines.append("【🚀 个股突破 +3% / 涨停】")
         for (sector, code, name, pct, is_lu) in new_stocks:
             tag = " 涨停🔥" if is_lu else ""
             lines.append(f"• {name}({code}) [{sector}] +{pct:.2f}%{tag}")
@@ -242,7 +242,7 @@ def build_message(new_sectors, new_stocks, date):
 def test_push():
     ok = pu.push_serverchan(
         "✅突破监控系统已上线",
-        "板块+1% 突破 与 个股+5% 突破 双路监控已接入 GitHub Actions（每5分钟巡检）。\n"
+        "板块+1% 突破 与 个股+3% 突破 双路监控已接入 GitHub Actions（每5分钟巡检）。\n"
         "交易时段内一旦触发，将立即推送本条同款告警到你的微信。\n"
         "本通知为部署自检，非真实突破。")
     print("test_push 结果:", ok)
