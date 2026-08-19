@@ -518,9 +518,9 @@ def selftest():
         ("市场情绪", "CN0Y", "富时A50期指"),
     ]
     sent_spot = {
-        "883993": {"name": "昨日非ST首板", "price": 1000, "pct": 0.02, "time": date + "100000", "high_limit": 0},
-        "883988": {"name": "昨日非ST连板", "price": 1000, "pct": -0.02, "time": date + "100000", "high_limit": 0},
-        "CN0Y":   {"name": "富时A50期指",  "price": 15000, "pct": 0.005, "time": date + "100000", "high_limit": 0},
+        "883993": {"name": "昨日非ST首板", "price": 1000, "pct": 2.0, "time": date + "100000", "high_limit": 0},
+        "883988": {"name": "昨日非ST连板", "price": 1000, "pct": -2.0, "time": date + "100000", "high_limit": 0},
+        "CN0Y":   {"name": "富时A50期指",  "price": 15000, "pct": 0.5, "time": date + "100000", "high_limit": 0},
     }
     save_state({"date": date, "sector_pushed": [], "stock_pushed": [], "sentiment_last_alert": {}})
     ns3, nk3, nm3 = check_once(push=False, spot=sent_spot, pool=sent_pool)
