@@ -43,8 +43,8 @@ SECTOR_RULES = {
     "创新药":     {"mode": "breakout", "stock_pct": 3.0, "sector_avg_pct": 1.0},
     "存储芯片":   {"mode": "breakout", "stock_pct": 3.0, "sector_avg_pct": 1.0},
     "稀土永磁":   {"mode": "breakout", "stock_pct": 3.0, "sector_avg_pct": 1.0},
-    "市场情绪":   {"mode": "bidirectional", "threshold": 0.01, "dedup": False,
-                  "note": "涨幅或跌幅绝对值 > 0.01% 即推送，交易时段内无限次"},
+    "市场情绪":   {"mode": "bidirectional", "threshold": 1.0, "dedup": False,
+                  "note": "涨幅或跌幅绝对值 > 1% 即推送，交易时段内无限次"},
 }
 
 # 市场情绪特殊代码（同花顺概念指数 / 新加坡 A50 期指）需要单独数据源
