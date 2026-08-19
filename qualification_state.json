@@ -22,5 +22,11 @@
     "first_day": "",
     "last_date": "",
     "removed": false
+  },
+  "市场情绪": {
+    "day_count": 0,
+    "first_day": "",
+    "last_date": "",
+    "removed": false
   }
 }
