@@ -47,7 +47,7 @@ SECTOR_RULES = {
     "存储芯片":   {"mode": "breakout", "stock_pct": 3.0, "sector_avg_pct": 1.0},
     "稀土永磁":   {"mode": "breakout", "stock_pct": 3.0, "sector_avg_pct": 1.0},
     "市场情绪":   {"mode": "bidirectional", "threshold": 0.1, "dedup": False,
-                  "note": "以今日开盘价为基准，板块均值 + 4个股 涨跌幅绝对值 > 0.1% 即边缘触发推送（穿越一次推一次，不无限刷屏）"},
+                  "note": "以今日开盘价为基准，板块均值 + 4个股 涨跌幅绝对值 > 0.1% 即推送（无限次，每次扫描都推）"},
 }
 
 # 市场情绪特殊代码（同花顺概念指数 / 新加坡 A50 期指）需要单独数据源
@@ -344,12 +344,11 @@ def detect_stock_breakouts(pool, spot):
 
 def detect_sentiment_alerts(pool, spot, state, threshold=None):
     """
-    市场情绪板块：双向阈值(±threshold) 边缘触发告警。
+    市场情绪板块：双向阈值(±threshold) 无限次推送。
     涨跌幅基准 = 今日开盘价（用户要求：以开盘价 ±0.1% 触发，而非昨收）。
-      - 对 4 个个股/指标分别做「区间内(|pctFromOpen|<=阈值) → 区间外(|pctFromOpen|>阈值)」跨越检测，跨越才推送；
-      - 额外计算 4 指标(较开盘价)涨跌幅的「板块均值」，均值跨越 ±threshold 也推送。
-    边缘触发可在 ±0.1% 窄阈值下避免持续刷屏（非无限次：每次穿越只推一次，回到区间内再穿出才再推）。
-    状态存于 state['sentiment_region']：code / '__avg__' -> 'in'/'out'。
+      - 对 4 个个股/指标分别检测：只要 |pctFromOpen| > 阈值即推送；
+      - 额外计算 4 指标(较开盘价)涨跌幅的「板块均值」，均值越阈值也推送。
+    无限次推送（每次扫描都推，不受状态机限制）。
     返回 [(sector, code, name, pct, direction, is_avg), ...]（pct 为较开盘价涨跌幅）
     """
     out = []
@@ -358,7 +357,6 @@ def detect_sentiment_alerts(pool, spot, state, threshold=None):
         return out
     if threshold is None:
         threshold = float(rule.get("threshold", 0.1))
-    region = state.setdefault("sentiment_region", {})
 
     sent = []
     for sector, code, name in pool:
@@ -376,24 +374,18 @@ def detect_sentiment_alerts(pool, spot, state, threshold=None):
             pct = v.get("pct") or 0.0
         sent.append((code, name, pct))
 
-    # 个股/指标 边缘触发
+    # 个股/指标 无限次推送
     for code, name, pct in sent:
-        r = "out" if abs(pct) >= threshold else "in"
-        prev = region.get(code, "in")
-        if prev == "in" and r == "out":
+        if abs(pct) >= threshold:
             direction = "rise" if pct > 0 else "fall"
             out.append(("市场情绪", code, name, pct, direction, False))
-        region[code] = r
 
-    # 板块均值 边缘触发
+    # 板块均值 无限次推送
     if sent:
         avg = sum(p for _, _, p in sent) / len(sent)
-        r = "out" if abs(avg) >= threshold else "in"
-        prev = region.get("__avg__", "in")
-        if prev == "in" and r == "out":
+        if abs(avg) >= threshold:
             direction = "rise" if avg > 0 else "fall"
             out.append(("市场情绪", "__avg__", "市场情绪(均值)", avg, direction, True))
-        region["__avg__"] = r
     return out
 
 
@@ -507,9 +499,9 @@ def build_message(new_sectors, new_stocks, new_sentiment, date):
                 lines.append(f"• {emoji} {name}({code}) 较开盘价 {pct:+.2f}%")
         lines.append("")
     if new_sentiment and not new_sectors and not new_stocks:
-        lines.append("（市场情绪：以今日开盘价为基准，涨跌幅越±0.1%即触发；穿越一次推一次，不无限刷屏）")
+        lines.append("（市场情绪：以今日开盘价为基准，涨跌幅越±0.1%即推送，无限次）")
     else:
-        lines.append("（板块/个股当天仅首次突破推送一次；市场情绪较开盘价越阈值即触发）")
+        lines.append("（板块/个股当天仅首次突破推送一次；市场情绪无限次推送）")
     title = (f"🚨突破预警 {date}｜板块{len(new_sectors)} 个股{len(new_stocks)} 情绪{len(new_sentiment)}")
     return title, "\n".join(lines)
 
