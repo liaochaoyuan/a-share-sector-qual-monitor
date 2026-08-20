@@ -8,6 +8,7 @@
 触发规则：
   A. 板块突破：某板块「当日平均涨幅」首次 >= +1.0%  → 立即推送（当天每板块去重一次）
   B. 个股突破：某只个股「当日涨幅」首次 >= +3.0%（或涨停）→ 立即推送（当天每股票去重一次）
+  C. 市场情绪：板块均值 + 4个股 涨跌幅绝对值首次跨越 ±0.1% → 边缘触发推送（交易时段内可多次）
 推送：复用 push_utils（Server酱微信主通道；SENDKEY 来自环境变量 SERVERCHAN_SENDKEY / push_config.json）
 状态持久化：breakout_state.json（提交回仓库，跨 cron 调用保持去重；每日北京时间自动重置）
 运行：
@@ -30,6 +31,8 @@ import push_utils as pu
 BASE = os.path.dirname(os.path.abspath(__file__))
 POOL_CSV = os.path.join(BASE, "all_sectors_pool.csv")
 STATE_FILE = os.path.join(BASE, "breakout_state.json")
+# 状态文件路径（可被 --state 覆盖，便于双工作流各持独立状态，避免 git 提交冲突）
+STATE_PATH = STATE_FILE
 
 SECTOR_BREAKOUT_PCT = 1.0   # 板块平均涨幅突破阈值（+1%）
 STOCK_BREAKOUT_PCT = 3.0    # 个股涨幅突破阈值（+3%）；另含涨停判定
@@ -43,8 +46,8 @@ SECTOR_RULES = {
     "创新药":     {"mode": "breakout", "stock_pct": 3.0, "sector_avg_pct": 1.0},
     "存储芯片":   {"mode": "breakout", "stock_pct": 3.0, "sector_avg_pct": 1.0},
     "稀土永磁":   {"mode": "breakout", "stock_pct": 3.0, "sector_avg_pct": 1.0},
-    "市场情绪":   {"mode": "bidirectional", "threshold": 1.0, "dedup": False,
-                  "note": "涨幅或跌幅绝对值 > 1% 即推送，交易时段内无限次"},
+    "市场情绪":   {"mode": "bidirectional", "threshold": 0.1, "dedup": False,
+                  "note": "板块均值 + 4个股 涨跌幅绝对值 > 0.1% 即边缘触发推送，交易时段内可多次"},
 }
 
 # 市场情绪特殊代码（同花顺概念指数 / 新加坡 A50 期指）需要单独数据源
@@ -53,13 +56,37 @@ SPECIAL_CODE_PATTERNS = {
     "a50_futures": re.compile(r"^CN0Y$|^CN00Y$", re.I),   # 富时 A50 期指连续
 }
 
-# 市场情绪重复提醒最小间隔（秒）：避免同一分钟内连爆；0 = 完全无间隔
+# 市场情绪重复提醒最小间隔（秒）：边缘触发已取代旧逻辑，此常量保留兼容
 SENTIMENT_COOLDOWN_SECONDS = 0
 
 
 # ======================================================================
 # 工具
 # ======================================================================
+def http_get(url, headers=None, retries=3, timeout=15):
+    """带重试的标准库 GET。同花顺/东财接口偶发 502/超时，重试可大幅提升稳定性。"""
+    last_err = None
+    for _ in range(retries):
+        try:
+            req = urllib.request.Request(url, headers=headers or {"User-Agent": "Mozilla/5.0"})
+            return urllib.request.urlopen(req, timeout=timeout).read().decode("utf-8", "ignore")
+        except Exception as e:
+            last_err = e
+            continue
+    if last_err:
+        print(f"[http_get] 失败(重试{retries}次): {url[:80]} -> {last_err}")
+    return None
+
+
+def http_get_json(url, headers=None, retries=3, timeout=15):
+    raw = http_get(url, headers=headers, retries=retries, timeout=timeout)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
 def beijing_now():
     """返回北京时间（UTC+8）。GitHub runner 时钟为 UTC，必须显式加 8 小时。"""
     return datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8)
@@ -115,11 +142,12 @@ def _spot_ths_concept(code):
     """通过 同花顺 K 线接口获取概念指数最新价与涨跌幅（标准库，无第三方依赖）。"""
     url = f"https://d.10jqka.com.cn/v4/line/bk_{code}/01/last.js"
     try:
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0",
+        raw = http_get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "Referer": "https://q.10jqka.com.cn/"
-        })
-        raw = urllib.request.urlopen(req, timeout=15).read().decode("utf-8", "ignore")
+        }, retries=4, timeout=15)
+        if not raw:
+            return {}
         d = _parse_jsonp(raw)
         if not d:
             return {}
@@ -156,9 +184,9 @@ def _spot_a50_futures(code):
     em_code = "CN00Y" if code.upper() in ("CN0Y", "CN00Y") else code.upper()
     url = f"https://futsseapi.eastmoney.com/static/104_{em_code}_qt"
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        raw = urllib.request.urlopen(req, timeout=15).read().decode("utf-8", "ignore")
-        d = json.loads(raw)
+        d = http_get_json(url, headers={"User-Agent": "Mozilla/5.0"}, retries=4, timeout=15)
+        if not d:
+            return {}
         qt = d.get("qt", {})
         if not qt:
             return {}
@@ -200,33 +228,36 @@ def get_spot_map(codes):
     normal = [c for c in codes if not is_special_code(c)]
     special = [c for c in codes if is_special_code(c)]
     result = {}
-    # 1) 普通 A 股走腾讯接口
+    # 1) 普通 A 股走腾讯接口（失败不致命：不能因为腾讯抖动就中断情绪监控）
     if normal:
         q = ",".join(prefix_of(c) + c for c in normal)
         url = SPOT_URL + q
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        raw = urllib.request.urlopen(req, timeout=15).read().decode("gbk", "ignore")
-        for line in raw.split(";"):
-            line = line.strip()
-            if "=" not in line:
-                continue
-            key, _, val = line.partition("=")
-            val = val.strip('"')
-            parts = val.split("~")
-            if len(parts) < 50:
-                continue
-            code = re.sub(r"\D", "", key[2:] if key.startswith("v_") else key).zfill(6)
-            try:
-                price = float(parts[3])
-                high_limit = float(parts[47]) if parts[47] else 0.0
-                pct = float(parts[32]) if len(parts) > 32 and parts[32] else 0.0
-            except (ValueError, TypeError):
-                price = high_limit = pct = 0.0
-            result[code] = {
-                "name": parts[1], "price": price, "pct": pct,
-                "time": parts[30], "high_limit": high_limit,
-            }
-    # 2) 特殊代码走 akshare 备用源
+        try:
+            raw = http_get(url, retries=3, timeout=15)
+            if raw:
+                for line in raw.split(";"):
+                    line = line.strip()
+                    if "=" not in line:
+                        continue
+                    key, _, val = line.partition("=")
+                    val = val.strip('"')
+                    parts = val.split("~")
+                    if len(parts) < 50:
+                        continue
+                    code = re.sub(r"\D", "", key[2:] if key.startswith("v_") else key).zfill(6)
+                    try:
+                        price = float(parts[3])
+                        high_limit = float(parts[47]) if parts[47] else 0.0
+                        pct = float(parts[32]) if len(parts) > 32 and parts[32] else 0.0
+                    except (ValueError, TypeError):
+                        price = high_limit = pct = 0.0
+                    result[code] = {
+                        "name": parts[1], "price": price, "pct": pct,
+                        "time": parts[30], "high_limit": high_limit,
+                    }
+        except Exception as e:
+            print(f"[get_spot_map] 腾讯接口异常(普通A股)，仅情绪监控继续: {e}")
+    # 2) 特殊代码（同花顺概念指数 / A50 期指）：独立源，优先保证情绪可用
     if special:
         result.update(get_spot_map_special(special))
     return result
@@ -307,41 +338,50 @@ def detect_stock_breakouts(pool, spot):
     return out
 
 
-def detect_sentiment_alerts(pool, spot, now_beijing, state):
+def detect_sentiment_alerts(pool, spot, state, threshold=None):
     """
-    市场情绪板块：双向阈值告警，交易时段内无限次。
-    返回 [(sector, code, name, pct, direction), ...]，direction='rise'/'fall'。
-    用 state['sentiment_last_alert'] 做可选冷却（SENTIMENT_COOLDOWN_SECONDS）。
+    市场情绪板块：双向阈值(±threshold) 边缘触发告警。
+      - 对 4 个个股/指标分别做「区间内(|pct|<=阈值) → 区间外(|pct|>阈值)」跨越检测，跨越才推送；
+      - 额外计算 4 指标涨跌幅的「板块均值」，均值跨越 ±threshold 也推送。
+    边缘触发可在 ±0.1% 窄阈值下避免持续刷屏，同时保留交易时段内多次触发能力（"无限次"）。
+    状态存于 state['sentiment_region']：code / '__avg__' -> 'in'/'out'。
+    返回 [(sector, code, name, pct, direction, is_avg), ...]
     """
     out = []
     rule = SECTOR_RULES.get("市场情绪", {})
     if rule.get("mode") != "bidirectional":
         return out
-    threshold = float(rule.get("threshold", 0.01))
-    last = state.setdefault("sentiment_last_alert", {})   # code_direction -> iso timestamp
+    if threshold is None:
+        threshold = float(rule.get("threshold", 0.1))
+    region = state.setdefault("sentiment_region", {})
 
+    sent = []
     for sector, code, name in pool:
         if sector != "市场情绪":
             continue
         v = spot.get(code)
         if not v:
             continue
-        pct = v.get("pct") or 0.0
-        direction = None
-        if pct > threshold:
-            direction = "rise"
-        elif pct < -threshold:
-            direction = "fall"
-        if not direction:
-            continue
-        key = f"{code}_{direction}"
-        last_ts = last.get(key)
-        if SENTIMENT_COOLDOWN_SECONDS > 0 and last_ts:
-            last_dt = datetime.datetime.fromisoformat(last_ts)
-            if (now_beijing - last_dt).total_seconds() < SENTIMENT_COOLDOWN_SECONDS:
-                continue
-        out.append((sector, code, name, pct, direction))
-        last[key] = now_beijing.isoformat()
+        sent.append((code, name, v.get("pct") or 0.0))
+
+    # 个股/指标 边缘触发
+    for code, name, pct in sent:
+        r = "out" if abs(pct) >= threshold else "in"
+        prev = region.get(code, "in")
+        if prev == "in" and r == "out":
+            direction = "rise" if pct > 0 else "fall"
+            out.append(("市场情绪", code, name, pct, direction, False))
+        region[code] = r
+
+    # 板块均值 边缘触发
+    if sent:
+        avg = sum(p for _, _, p in sent) / len(sent)
+        r = "out" if abs(avg) >= threshold else "in"
+        prev = region.get("__avg__", "in")
+        if prev == "in" and r == "out":
+            direction = "rise" if avg > 0 else "fall"
+            out.append(("市场情绪", "__avg__", "市场情绪(均值)", avg, direction, True))
+        region["__avg__"] = r
     return out
 
 
@@ -350,14 +390,15 @@ def detect_sentiment_alerts(pool, spot, now_beijing, state):
 # ======================================================================
 def load_state():
     try:
-        with open(STATE_FILE, encoding="utf-8") as f:
+        with open(STATE_PATH, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        return {"date": "", "sector_pushed": [], "stock_pushed": [], "sentiment_last_alert": {}}
+        return {"date": "", "sector_pushed": [], "stock_pushed": [],
+                "sentiment_last_alert": {}, "sentiment_region": {}}
 
 
 def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
+    with open(STATE_PATH, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
@@ -369,7 +410,8 @@ def check_once(push=True, spot=None, pool=None):
     now = beijing_now()
     state = load_state()
     if state.get("date") != date:
-        state = {"date": date, "sector_pushed": [], "stock_pushed": [], "sentiment_last_alert": {}}
+        state = {"date": date, "sector_pushed": [], "stock_pushed": [],
+                 "sentiment_last_alert": {}, "sentiment_region": {}}
 
     if pool is None:
         pool = load_pool()
@@ -379,11 +421,10 @@ def check_once(push=True, spot=None, pool=None):
     if not spot:
         return [], [], []
 
-    # 校验行情日期为今日（北京时间）：避免盘前/隔夜用上一交易日数据误判突破
-    # 特殊代码（期货/概念指数）的时间字段可能为空，放行
-    sample = next(iter(spot.values()))
-    quote_date = (sample.get("time") or "")[:8]
-    if quote_date and quote_date != date:
+    # 行情日期校验（软化）：只要「任一」有效行情日期是今天就放行，
+    # 避免单一股票时间字段异常（或腾讯偶发空数据）误杀整体，也保证情绪源(同花顺/东财)可用时必跑。
+    valid_dates = {(v.get("time") or "")[:8] for v in spot.values() if v.get("time")}
+    if valid_dates and date not in valid_dates:
         return [], [], []
 
     # 按板块规则分组
@@ -412,8 +453,10 @@ def check_once(push=True, spot=None, pool=None):
                 new_stocks.append((sector, code, name, pct, is_lu))
                 state["stock_pushed"].append(code)
 
-    # ---- 市场情绪双向告警（无限次）----
-    new_sentiment = detect_sentiment_alerts(sentiment_pool, spot, now, state)
+    # ---- 市场情绪双向告警（边缘触发，±0.1%）----
+    sentiment_rule = SECTOR_RULES.get("市场情绪", {})
+    sentiment_threshold = float(sentiment_rule.get("threshold", 0.1))
+    new_sentiment = detect_sentiment_alerts(sentiment_pool, spot, state, sentiment_threshold)
 
     if new_sectors or new_stocks or new_sentiment:
         if push:
@@ -443,15 +486,18 @@ def build_message(new_sectors, new_stocks, new_sentiment, date):
             lines.append(f"• {name}({code}) [{sector}] +{pct:.2f}%{tag}")
         lines.append("")
     if new_sentiment:
-        lines.append("【💓 市场情绪 | 涨跌超 0.01%】")
-        for (sector, code, name, pct, direction) in new_sentiment:
+        lines.append("【💓 市场情绪 | 涨跌超 ±0.1%】")
+        for (sector, code, name, pct, direction, is_avg) in new_sentiment:
             emoji = "📈" if direction == "rise" else "📉"
-            lines.append(f"• {emoji} {name}({code}) {pct:+.2f}%")
+            if is_avg:
+                lines.append(f"• {emoji} {name}（4指标均值）{pct:+.2f}%")
+            else:
+                lines.append(f"• {emoji} {name}({code}) {pct:+.2f}%")
         lines.append("")
     if new_sentiment and not new_sectors and not new_stocks:
-        lines.append("（市场情绪指标在交易时段内持续监控，无限次提醒）")
+        lines.append("（市场情绪：板块均值与4个股涨跌幅越±0.1%即触发，交易时段内可多次）")
     else:
-        lines.append("（板块/个股当天仅首次突破推送一次；市场情绪无限次）")
+        lines.append("（板块/个股当天仅首次突破推送一次；市场情绪越阈值即触发）")
     title = (f"🚨突破预警 {date}｜板块{len(new_sectors)} 个股{len(new_stocks)} 情绪{len(new_sentiment)}")
     return title, "\n".join(lines)
 
@@ -511,30 +557,44 @@ def selftest():
     assert len(ns2) == 0 and len(nk2) == 0 and len(nm2) == 0, "第二次调用应全部去重"
     print("  当日去重通过 ✅")
 
-    # 市场情绪双向阈值 + 无限次
+    # 市场情绪 ±0.1% 边缘触发
     sent_pool = [
         ("市场情绪", "883993", "昨日非ST首板"),
         ("市场情绪", "883988", "昨日非ST连板"),
         ("市场情绪", "CN0Y", "富时A50期指"),
     ]
+    # 三指标都越界：883993 +2%、883988 -2%、CN0Y +0.5%；板块均值 (2-2+0.5)/3=+0.17% 也越界
     sent_spot = {
         "883993": {"name": "昨日非ST首板", "price": 1000, "pct": 2.0, "time": date + "100000", "high_limit": 0},
         "883988": {"name": "昨日非ST连板", "price": 1000, "pct": -2.0, "time": date + "100000", "high_limit": 0},
         "CN0Y":   {"name": "富时A50期指",  "price": 15000, "pct": 0.5, "time": date + "100000", "high_limit": 0},
     }
-    save_state({"date": date, "sector_pushed": [], "stock_pushed": [], "sentiment_last_alert": {}})
+    save_state({"date": date, "sector_pushed": [], "stock_pushed": [], "sentiment_last_alert": {}, "sentiment_region": {}})
     ns3, nk3, nm3 = check_once(push=False, spot=sent_spot, pool=sent_pool)
-    assert len(nm3) == 2, "市场情绪应触发 2 条（涨/跌各一）"
-    assert any(c == "883993" and d == "rise" for _, c, _, _, d in nm3)
-    assert any(c == "883988" and d == "fall" for _, c, _, _, d in nm3)
-    # 同方向、同数值再次扫描仍应触发（无限次，仅受可选冷却限制）
+    assert len(nm3) == 4, f"市场情绪首次应触发 4 条(3个股+1均值)，实际 {len(nm3)}"
+    assert any(c == "883993" and d == "rise" for _, c, _, _, d, _ in nm3)
+    assert any(c == "883988" and d == "fall" for _, c, _, _, d, _ in nm3)
+    assert any(c == "__avg__" for _, c, _, _, _, _ in nm3), "应包含板块均值触发"
+    # 第二次同值扫描：已在区间外，不应重复触发（边缘触发去重）
     ns4, nk4, nm4 = check_once(push=False, spot=sent_spot, pool=sent_pool)
-    assert len(nm4) == 2, "市场情绪应无限次触发"
-    print("  市场情绪双向/无限次检测通过 ✅")
+    assert len(nm4) == 0, f"第二次同值不应重复触发，实际 {len(nm4)}"
+    # 回落区间内再越界 -> 再次触发（模拟盘中多次穿越）
+    sent_spot_in = {k: dict(v, pct=0.0) for k, v in sent_spot.items()}
+    check_once(push=False, spot=sent_spot_in, pool=sent_pool)   # 回到 inside
+    ns6, nk6, nm6 = check_once(push=False, spot=sent_spot, pool=sent_pool)  # 再越界
+    assert len(nm6) == 4, f"回落后再越界应再次触发 4 条，实际 {len(nm6)}"
+    print("  市场情绪 ±0.1% 边缘触发检测通过 ✅")
     print(">>> 自检全部通过 ✅")
 
 
 if __name__ == "__main__":
+    if "--state" in sys.argv:
+        try:
+            i = sys.argv.index("--state")
+            if i + 1 < len(sys.argv):
+                STATE_PATH = os.path.abspath(sys.argv[i + 1])
+        except Exception:
+            pass
     if "--selftest" in sys.argv:
         selftest()
     elif "--test-push" in sys.argv:
@@ -547,4 +607,4 @@ if __name__ == "__main__":
         ns, nk, nm = check_once(push=True)
         print(f"本轮：板块新增突破 {len(ns)}，个股新增突破 {len(nk)}，市场情绪 {len(nm)}")
     else:
-        print("用法: --once | --test-push | --selftest")
+        print("用法: --once [--state 路径] | --test-push | --selftest")
