@@ -581,16 +581,17 @@ def selftest():
     assert any(c == "883993" and d == "rise" for _, c, _, _, d, _ in nm3)
     assert any(c == "883988" and d == "fall" for _, c, _, _, d, _ in nm3)
     assert any(c == "__avg__" for _, c, _, _, _, _ in nm3), "应包含板块均值触发"
-    # 第二次同值扫描：已在区间外，不应重复触发（边缘触发去重）
+    # 第二次同值扫描：无限次推送，同值再次扫描仍应触发 4 条
     ns4, nk4, nm4 = check_once(push=False, spot=sent_spot, pool=sent_pool)
-    assert len(nm4) == 0, f"第二次同值不应重复触发，实际 {len(nm4)}"
-    # 回落区间内再越界 -> 再次触发（模拟盘中多次穿越）
-    # 把 open 设为 price，使得 open 基准 pct ≈ 0（回到区间内）
+    assert len(nm4) == 4, f"第二次同值应再次触发 4 条（无限次），实际 {len(nm4)}"
+    # 回落区间内（pct=0）不应触发
     sent_spot_in = {k: dict(v, open=v["price"]) for k, v in sent_spot.items()}
-    check_once(push=False, spot=sent_spot_in, pool=sent_pool)   # 回到 inside
-    ns6, nk6, nm6 = check_once(push=False, spot=sent_spot, pool=sent_pool)  # 再越界
-    assert len(nm6) == 4, f"回落后再越界应再次触发 4 条，实际 {len(nm6)}"
-    print("  市场情绪 ±0.1% 边缘触发检测通过 ✅")
+    ns5, nk5, nm5 = check_once(push=False, spot=sent_spot_in, pool=sent_pool)
+    assert len(nm5) == 0, f"回落区间内不应触发，实际 {len(nm5)}"
+    # 再次越界应触发（模拟盘中波动）
+    ns6, nk6, nm6 = check_once(push=False, spot=sent_spot, pool=sent_pool)
+    assert len(nm6) == 4, f"再次越界应触发 4 条，实际 {len(nm6)}"
+    print("  市场情绪 ±0.1% 无限次推送检测通过 ✅")
     print(">>> 自检全部通过 ✅")
 
 
