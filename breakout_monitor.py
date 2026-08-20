@@ -8,7 +8,7 @@
 触发规则：
   A. 板块突破：某板块「当日平均涨幅」首次 >= +1.0%  → 立即推送（当天每板块去重一次）
   B. 个股突破：某只个股「当日涨幅」首次 >= +3.0%（或涨停）→ 立即推送（当天每股票去重一次）
-  C. 市场情绪：板块均值 + 4个股 涨跌幅绝对值首次跨越 ±0.1% → 边缘触发推送（交易时段内可多次）
+  C. 市场情绪：板块均值 + 4个股 以「今日开盘价」为基准的涨跌幅绝对值首次跨越 ±0.1% → 边缘触发推送（穿越一次推一次，不无限刷屏）
 推送：复用 push_utils（Server酱微信主通道；SENDKEY 来自环境变量 SERVERCHAN_SENDKEY / push_config.json）
 状态持久化：breakout_state.json（提交回仓库，跨 cron 调用保持去重；每日北京时间自动重置）
 运行：
@@ -47,7 +47,7 @@ SECTOR_RULES = {
     "存储芯片":   {"mode": "breakout", "stock_pct": 3.0, "sector_avg_pct": 1.0},
     "稀土永磁":   {"mode": "breakout", "stock_pct": 3.0, "sector_avg_pct": 1.0},
     "市场情绪":   {"mode": "bidirectional", "threshold": 0.1, "dedup": False,
-                  "note": "板块均值 + 4个股 涨跌幅绝对值 > 0.1% 即边缘触发推送，交易时段内可多次"},
+                  "note": "以今日开盘价为基准，板块均值 + 4个股 涨跌幅绝对值 > 0.1% 即边缘触发推送（穿越一次推一次，不无限刷屏）"},
 }
 
 # 市场情绪特殊代码（同花顺概念指数 / 新加坡 A50 期指）需要单独数据源
@@ -161,6 +161,7 @@ def _spot_ths_concept(code):
         if len(today) < 5 or len(prev) < 5:
             return {}
         name = d.get("name", "")
+        open_today = float(today[1])
         close_today = float(today[4])
         close_prev = float(prev[4])
         pct = (close_today - close_prev) / close_prev * 100 if close_prev else 0.0
@@ -168,6 +169,7 @@ def _spot_ths_concept(code):
             code: {
                 "name": name,
                 "price": close_today,
+                "open": open_today,
                 "pct": pct,
                 "time": beijing_now().strftime("%Y%m%d%H%M%S"),
                 "high_limit": 0.0,
@@ -191,12 +193,14 @@ def _spot_a50_futures(code):
         if not qt:
             return {}
         price = float(qt.get("p", 0) or 0)
+        openp = float(qt.get("o", 0) or 0)
         pct = float(qt.get("zdf", 0) or 0)
         name = qt.get("name", f"富时A50期指({code})")
         return {
             code: {
                 "name": name,
                 "price": price,
+                "open": openp,
                 "pct": pct,
                 "time": beijing_now().strftime("%Y%m%d%H%M%S"),
                 "high_limit": 0.0,
@@ -341,11 +345,12 @@ def detect_stock_breakouts(pool, spot):
 def detect_sentiment_alerts(pool, spot, state, threshold=None):
     """
     市场情绪板块：双向阈值(±threshold) 边缘触发告警。
-      - 对 4 个个股/指标分别做「区间内(|pct|<=阈值) → 区间外(|pct|>阈值)」跨越检测，跨越才推送；
-      - 额外计算 4 指标涨跌幅的「板块均值」，均值跨越 ±threshold 也推送。
-    边缘触发可在 ±0.1% 窄阈值下避免持续刷屏，同时保留交易时段内多次触发能力（"无限次"）。
+    涨跌幅基准 = 今日开盘价（用户要求：以开盘价 ±0.1% 触发，而非昨收）。
+      - 对 4 个个股/指标分别做「区间内(|pctFromOpen|<=阈值) → 区间外(|pctFromOpen|>阈值)」跨越检测，跨越才推送；
+      - 额外计算 4 指标(较开盘价)涨跌幅的「板块均值」，均值跨越 ±threshold 也推送。
+    边缘触发可在 ±0.1% 窄阈值下避免持续刷屏（非无限次：每次穿越只推一次，回到区间内再穿出才再推）。
     状态存于 state['sentiment_region']：code / '__avg__' -> 'in'/'out'。
-    返回 [(sector, code, name, pct, direction, is_avg), ...]
+    返回 [(sector, code, name, pct, direction, is_avg), ...]（pct 为较开盘价涨跌幅）
     """
     out = []
     rule = SECTOR_RULES.get("市场情绪", {})
@@ -362,7 +367,14 @@ def detect_sentiment_alerts(pool, spot, state, threshold=None):
         v = spot.get(code)
         if not v:
             continue
-        sent.append((code, name, v.get("pct") or 0.0))
+        # 以今日开盘价为基准计算涨跌幅（无 open 时退回昨收 pct，做容错）
+        op = v.get("open")
+        cur = v.get("price") or 0.0
+        if op:
+            pct = (cur - op) / op * 100 if op else 0.0
+        else:
+            pct = v.get("pct") or 0.0
+        sent.append((code, name, pct))
 
     # 个股/指标 边缘触发
     for code, name, pct in sent:
@@ -486,18 +498,18 @@ def build_message(new_sectors, new_stocks, new_sentiment, date):
             lines.append(f"• {name}({code}) [{sector}] +{pct:.2f}%{tag}")
         lines.append("")
     if new_sentiment:
-        lines.append("【💓 市场情绪 | 涨跌超 ±0.1%】")
+        lines.append("【💓 市场情绪 | 较开盘价 ±0.1%】")
         for (sector, code, name, pct, direction, is_avg) in new_sentiment:
             emoji = "📈" if direction == "rise" else "📉"
             if is_avg:
-                lines.append(f"• {emoji} {name}（4指标均值）{pct:+.2f}%")
+                lines.append(f"• {emoji} {name}（4指标均值，较开盘价）{pct:+.2f}%")
             else:
-                lines.append(f"• {emoji} {name}({code}) {pct:+.2f}%")
+                lines.append(f"• {emoji} {name}({code}) 较开盘价 {pct:+.2f}%")
         lines.append("")
     if new_sentiment and not new_sectors and not new_stocks:
-        lines.append("（市场情绪：板块均值与4个股涨跌幅越±0.1%即触发，交易时段内可多次）")
+        lines.append("（市场情绪：以今日开盘价为基准，涨跌幅越±0.1%即触发；穿越一次推一次，不无限刷屏）")
     else:
-        lines.append("（板块/个股当天仅首次突破推送一次；市场情绪越阈值即触发）")
+        lines.append("（板块/个股当天仅首次突破推送一次；市场情绪较开盘价越阈值即触发）")
     title = (f"🚨突破预警 {date}｜板块{len(new_sectors)} 个股{len(new_stocks)} 情绪{len(new_sentiment)}")
     return title, "\n".join(lines)
 
@@ -563,11 +575,13 @@ def selftest():
         ("市场情绪", "883988", "昨日非ST连板"),
         ("市场情绪", "CN0Y", "富时A50期指"),
     ]
-    # 三指标都越界：883993 +2%、883988 -2%、CN0Y +0.5%；板块均值 (2-2+0.5)/3=+0.17% 也越界
+    # 三指标都越界（以开盘价为基准）：883993 +2%、883988 -2%、CN0Y +0.5%；板块均值 +0.17% 也越界
+    # open 取值使得 (price-open)/open*100 == 对应涨跌幅，覆盖开盘价基准分支
+    # pct 字段保留作为 fallback（无 open 时退回 pct），selftest 里 open 分支必走
     sent_spot = {
-        "883993": {"name": "昨日非ST首板", "price": 1000, "pct": 2.0, "time": date + "100000", "high_limit": 0},
-        "883988": {"name": "昨日非ST连板", "price": 1000, "pct": -2.0, "time": date + "100000", "high_limit": 0},
-        "CN0Y":   {"name": "富时A50期指",  "price": 15000, "pct": 0.5, "time": date + "100000", "high_limit": 0},
+        "883993": {"name": "昨日非ST首板", "price": 1000, "open": 980.392, "pct": 2.0, "time": date + "100000", "high_limit": 0},
+        "883988": {"name": "昨日非ST连板", "price": 1000, "open": 1020.408, "pct": -2.0, "time": date + "100000", "high_limit": 0},
+        "CN0Y":   {"name": "富时A50期指",  "price": 15000, "open": 14925.373, "pct": 0.5, "time": date + "100000", "high_limit": 0},
     }
     save_state({"date": date, "sector_pushed": [], "stock_pushed": [], "sentiment_last_alert": {}, "sentiment_region": {}})
     ns3, nk3, nm3 = check_once(push=False, spot=sent_spot, pool=sent_pool)
@@ -579,7 +593,8 @@ def selftest():
     ns4, nk4, nm4 = check_once(push=False, spot=sent_spot, pool=sent_pool)
     assert len(nm4) == 0, f"第二次同值不应重复触发，实际 {len(nm4)}"
     # 回落区间内再越界 -> 再次触发（模拟盘中多次穿越）
-    sent_spot_in = {k: dict(v, pct=0.0) for k, v in sent_spot.items()}
+    # 把 open 设为 price，使得 open 基准 pct ≈ 0（回到区间内）
+    sent_spot_in = {k: dict(v, open=v["price"]) for k, v in sent_spot.items()}
     check_once(push=False, spot=sent_spot_in, pool=sent_pool)   # 回到 inside
     ns6, nk6, nm6 = check_once(push=False, spot=sent_spot, pool=sent_pool)  # 再越界
     assert len(nm6) == 4, f"回落后再越界应再次触发 4 条，实际 {len(nm6)}"
