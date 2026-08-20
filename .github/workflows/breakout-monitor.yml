@@ -45,11 +45,17 @@ jobs:
         run: |
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
-          if [[ -n "$(git status --porcelain breakout_state.json)" ]]; then
-            git add breakout_state.json
+          FILE=breakout_state.json
+          if [[ -n "$(git status --porcelain $FILE)" ]]; then
+            git add "$FILE"
             git commit -m "chore: auto-persist breakout state [skip ci]"
-            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
-            echo "STATE_COMMITTED"
+            for i in 1 2 3; do
+              git pull --rebase origin main || true
+              if git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"; then
+                echo "STATE_COMMITTED"; break
+              fi
+              sleep 3
+            done
           else
             echo "STATE_UNCHANGED"
           fi
