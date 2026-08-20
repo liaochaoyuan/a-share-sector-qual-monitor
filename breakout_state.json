@@ -1,27 +1,7 @@
 {
-  "date": "20260820",
-  "sector_pushed": [
-    "共封装光学",
-    "创新药"
-  ],
-  "stock_pushed": [
-    "688090",
-    "688025",
-    "688313",
-    "300548",
-    "300570",
-    "002579",
-    "000963",
-    "301230",
-    "300149",
-    "301057"
-  ],
+  "date": "",
+  "sector_pushed": [],
+  "stock_pushed": [],
   "sentiment_last_alert": {},
-  "sentiment_region": {
-    "883993": "out",
-    "883988": "out",
-    "883410": "out",
-    "CN0Y": "out",
-    "__avg__": "out"
-  }
+  "sentiment_region": {}
 }
