@@ -5,7 +5,8 @@ on:
   # 脚本内部再做北京时间交易时段兜底判断。本工作流使用独立状态文件 sector_state.json，
   # 既避免与 breakout-monitor 抢同一文件造成 git 提交冲突，又能作为第二路推送冗余。
   schedule:
-    - cron: "*/5 1-7 * * 1-5"
+    # 与 breakout-monitor 错开 2 分钟触发，避免两个 job 同一分钟并发 git push 抢锁
+    - cron: "2-59/5 1-7 * * 1-5"
   # 允许在 Actions 页面手动触发，方便调试
   workflow_dispatch: {}
 
