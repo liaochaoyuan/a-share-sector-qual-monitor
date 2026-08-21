@@ -372,11 +372,13 @@ def detect_stock_breakouts(pool, spot):
 def detect_sentiment_alerts(pool, spot, state, threshold=None):
     """
     市场情绪板块：双向阈值(±threshold) 无限次推送。
-    涨跌幅基准 = 今日开盘价（用户要求：以开盘价 ±0.1% 触发，而非昨收）。
-      - 对 4 个个股/指标分别检测：只要 |pctFromOpen| > 阈值即推送；
-      - 额外计算 4 指标(较开盘价)涨跌幅的「板块均值」，均值越阈值也推送。
-    无限次推送（每次扫描都推，不受状态机限制）。
-    返回 [(sector, code, name, pct, direction, is_avg), ...]（pct 为较开盘价涨跌幅）
+
+    涨跌幅算法对齐同花顺盘面（修复"推送数字与看盘完全对不上"）：
+      - 展示值 = 较昨收涨跌幅 ＝ (现价-昨收)/昨收，与同花顺"涨跌幅"列完全一致；
+      - 触发值 = 日内较开盘涨跌幅 ＝ (现价-开盘)/开盘，即用户要求的"开盘价±0.1"信号
+        （开盘价为空时退回较昨收，二者重合，不影响触发）。
+    返回 [(sector, code, name, pct_yest, direction, is_avg, pct_open), ...]
+      pct_yest=较昨收(展示)  pct_open=较开盘(触发依据)
     """
     out = []
     rule = SECTOR_RULES.get("市场情绪", {})
@@ -385,34 +387,34 @@ def detect_sentiment_alerts(pool, spot, state, threshold=None):
     if threshold is None:
         threshold = float(rule.get("threshold", 0.1))
 
-    sent = []
+    sent = []  # (code, name, pct_yest, pct_open)
     for sector, code, name in pool:
         if sector != "市场情绪":
             continue
         v = spot.get(code)
         if not v:
             continue
-        # 以今日开盘价为基准计算涨跌幅（无 open 时退回昨收 pct，做容错）
-        op = v.get("open")
         cur = v.get("price") or 0.0
-        if op:
-            pct = (cur - op) / op * 100 if op else 0.0
-        else:
-            pct = v.get("pct") or 0.0
-        sent.append((code, name, pct))
+        op = v.get("open") or 0.0
+        # 较昨收：与同花顺盘面"涨跌幅"列一致（展示用）
+        pct_yest = float(v.get("pct") or 0.0)
+        # 较开盘：日内波动，触发阈值用（用户要求"开盘价±0.1 无限次"）
+        pct_open = (cur - op) / op * 100 if op else pct_yest
+        sent.append((code, name, pct_yest, pct_open))
 
-    # 个股/指标 无限次推送
-    for code, name, pct in sent:
-        if abs(pct) >= threshold:
-            direction = "rise" if pct > 0 else "fall"
-            out.append(("市场情绪", code, name, pct, direction, False))
+    # 个股/指标：触发依据=日内较开盘±threshold；展示=同花顺较昨收
+    for code, name, pct_yest, pct_open in sent:
+        if abs(pct_open) >= threshold:
+            direction = "rise" if pct_open > 0 else "fall"
+            out.append(("市场情绪", code, name, pct_yest, direction, False, pct_open))
 
-    # 板块均值 无限次推送
+    # 板块均值：触发用较开盘均值；展示用较昨收均值
     if sent:
-        avg = sum(p for _, _, p in sent) / len(sent)
-        if abs(avg) >= threshold:
-            direction = "rise" if avg > 0 else "fall"
-            out.append(("市场情绪", "__avg__", "市场情绪(均值)", avg, direction, True))
+        avg_open = sum(po for _, _, _, po in sent) / len(sent)
+        avg_yest = sum(py for _, _, py, _ in sent) / len(sent)
+        if abs(avg_open) >= threshold:
+            direction = "rise" if avg_open > 0 else "fall"
+            out.append(("市场情绪", "__avg__", "市场情绪(均值)", avg_yest, direction, True, avg_open))
     return out
 
 
@@ -517,16 +519,17 @@ def build_message(new_sectors, new_stocks, new_sentiment, date):
             lines.append(f"• {name}({code}) [{sector}] +{pct:.2f}%{tag}")
         lines.append("")
     if new_sentiment:
-        lines.append("【💓 市场情绪 | 较开盘价 ±0.1%】")
-        for (sector, code, name, pct, direction, is_avg) in new_sentiment:
+        lines.append("【💓 市场情绪 | 同花顺实时涨跌幅（较昨收）】")
+        for (sector, code, name, pct_yest, direction, is_avg, pct_open) in new_sentiment:
             emoji = "📈" if direction == "rise" else "📉"
             if is_avg:
-                lines.append(f"• {emoji} {name}（4指标均值，较开盘价）{pct:+.2f}%")
+                lines.append(f"• {emoji} {name}（同花顺较昨收均值）{pct_yest:+.2f}%")
             else:
-                lines.append(f"• {emoji} {name}({code}) 较开盘价 {pct:+.2f}%")
+                lines.append(f"• {emoji} {name}({code}) 同花顺较昨收 {pct_yest:+.2f}%")
+                lines.append(f"    （日内较开盘 {pct_open:+.2f}%，触发±0.1%阈值）")
         lines.append("")
     if new_sentiment and not new_sectors and not new_stocks:
-        lines.append("（市场情绪：以今日开盘价为基准，涨跌幅越±0.1%即推送，无限次）")
+        lines.append("（市场情绪：展示同花顺标准「较昨收」涨跌幅，与你盘面对应列一致；触发条件为日内较开盘波动超±0.1%，无限次推送）")
     else:
         lines.append("（板块/个股当天仅首次突破推送一次；市场情绪无限次推送）")
     title = (f"🚨突破预警 {date}｜板块{len(new_sectors)} 个股{len(new_stocks)} 情绪{len(new_sentiment)}")
@@ -605,9 +608,9 @@ def selftest():
     save_state({"date": date, "sector_pushed": [], "stock_pushed": [], "sentiment_last_alert": {}, "sentiment_region": {}})
     ns3, nk3, nm3 = check_once(push=False, spot=sent_spot, pool=sent_pool)
     assert len(nm3) == 4, f"市场情绪首次应触发 4 条(3个股+1均值)，实际 {len(nm3)}"
-    assert any(c == "883993" and d == "rise" for _, c, _, _, d, _ in nm3)
-    assert any(c == "883988" and d == "fall" for _, c, _, _, d, _ in nm3)
-    assert any(c == "__avg__" for _, c, _, _, _, _ in nm3), "应包含板块均值触发"
+    assert any(c == "883993" and d == "rise" for _, c, _, _, d, _, _ in nm3)
+    assert any(c == "883988" and d == "fall" for _, c, _, _, d, _, _ in nm3)
+    assert any(c == "__avg__" for _, c, _, _, _, _, _ in nm3), "应包含板块均值触发"
     # 第二次同值扫描：无限次推送，同值再次扫描仍应触发 4 条
     ns4, nk4, nm4 = check_once(push=False, spot=sent_spot, pool=sent_pool)
     assert len(nm4) == 4, f"第二次同值应再次触发 4 条（无限次），实际 {len(nm4)}"
