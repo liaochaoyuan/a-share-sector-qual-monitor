@@ -138,8 +138,26 @@ def _parse_jsonp(raw):
         return None
 
 
+def _safe_float(s):
+    """容错转 float：空串/非法字符返回 None（用于同花顺个别指数开盘价字段为空的场景）。"""
+    try:
+        if s is None:
+            return None
+        v = float(str(s).strip())
+        return v
+    except (ValueError, TypeError):
+        return None
+
+
 def _spot_ths_concept(code):
-    """通过 同花顺 K 线接口获取概念指数最新价与涨跌幅（标准库，无第三方依赖）。"""
+    """通过 同花顺日K线接口获取概念指数实时行情。
+
+    健壮性修正（修复“整天推同一个旧数字”的根因）：
+      - 新鲜度校验：最新一根 K 线日期必须是「今天」，否则视为数据源仍是昨天的棒，
+        直接返回空 → 该指标本轮跳过，绝不再把昨天的旧数据当今天推。
+      - 开盘价字段可能为空（如 883410 个别时段 open=''），此时退回「较昨收」基准
+        （open=昨收），避免 float('') 崩溃导致该指标静默消失。
+    """
     url = f"https://d.10jqka.com.cn/v4/line/bk_{code}/01/last.js"
     try:
         raw = http_get(url, headers={
@@ -160,11 +178,20 @@ def _spot_ths_concept(code):
         prev = entries[-2].split(",")
         if len(today) < 5 or len(prev) < 5:
             return {}
+        # ① 新鲜度校验：最新 K 线必须是今天，否则说明同花顺还没更新今日棒 → 跳过
+        bar_date = (today[0] or "").strip()
+        if bar_date != today_str_beijing():
+            return {}
         name = d.get("name", "")
-        open_today = float(today[1])
-        close_today = float(today[4])
-        close_prev = float(prev[4])
-        pct = (close_today - close_prev) / close_prev * 100 if close_prev else 0.0
+        close_today = _safe_float(today[4])
+        close_prev = _safe_float(prev[4])
+        if close_today is None or close_prev is None or close_prev == 0:
+            return {}
+        # ② 开盘价容错：883410 等个别指数开盘价字段可能为空 → 退回较昨收基准
+        open_today = _safe_float(today[1])
+        if open_today is None or open_today == 0:
+            open_today = close_prev
+        pct = (close_today - close_prev) / close_prev * 100
         return {
             code: {
                 "name": name,
