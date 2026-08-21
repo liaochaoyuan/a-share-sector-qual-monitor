@@ -50,10 +50,17 @@ SECTOR_RULES = {
                   "note": "以今日开盘价为基准，板块均值 + 4个股 涨跌幅绝对值 > 0.1% 即推送（无限次，每次扫描都推）"},
 }
 
-# 市场情绪特殊代码（同花顺概念指数 / 新加坡 A50 期指）需要单独数据源
+# 市场情绪特殊代码（同花顺概念指数 / 新加坡 A50 期指 / 东财涨停板块）需要单独数据源
+# 同花顺代码 → 东财代码映射（东财实时接口更准，同花顺免费版K线收盘字段对动态板块不准）
+THS_TO_EM_BOARD = {
+    "883993": "BK1630",  # 昨日非ST首板 → 东财昨日首板
+    "883988": "BK0816",  # 昨日非ST连板 → 东财昨日连板
+    "883410": "BK1638",  # 最近多板 → 东财最近多板
+}
 SPECIAL_CODE_PATTERNS = {
     "ths_concept": re.compile(r"^883\d{3}$|^880\d{3}$"),   # 同花顺概念/行业指数
     "a50_futures": re.compile(r"^CN0Y$|^CN00Y$", re.I),   # 富时 A50 期指连续
+    "em_board": re.compile(r"^BK\d{4}$"),                   # 东财板块代码
 }
 
 # 市场情绪重复提醒最小间隔（秒）：边缘触发已取代旧逻辑，此常量保留兼容
@@ -152,11 +159,8 @@ def _safe_float(s):
 def _spot_ths_concept(code):
     """通过 同花顺日K线接口获取概念指数实时行情。
 
-    健壮性修正（修复“整天推同一个旧数字”的根因）：
-      - 新鲜度校验：最新一根 K 线日期必须是「今天」，否则视为数据源仍是昨天的棒，
-        直接返回空 → 该指标本轮跳过，绝不再把昨天的旧数据当今天推。
-      - 开盘价字段可能为空（如 883410 个别时段 open=''），此时退回「较昨收」基准
-        （open=昨收），避免 float('') 崩溃导致该指标静默消失。
+    注意：此接口对动态板块（如涨停/连板）的收盘字段可能滞后，仅作为备用。
+    生产环境优先用 _spot_em_board() 东财实时接口。
     """
     url = f"https://d.10jqka.com.cn/v4/line/bk_{code}/01/last.js"
     try:
@@ -239,17 +243,69 @@ def _spot_a50_futures(code):
         return {}
 
 
+def _spot_em_board(code):
+    """通过东方财富实时接口获取概念板块行情（更准）。
+
+    code: 东财板块代码如 "BK1630"，或同花顺代码（自动映射）
+    返回: {code: {name, price, open, pct, time, high_limit, source}}
+    """
+    # 如果是同花顺代码，映射到东财代码
+    em_code = THS_TO_EM_BOARD.get(code, code)
+    # 去掉 "BK" 前缀（如果存在），东财 push2 接口需要纯数字
+    num_code = em_code.replace("BK", "")
+    # 东财板块 secid 格式: 90.xxx
+    secid = f"90.{num_code}"
+    url = f"https://push2.eastmoney.com/api/qt/stock/get?secid={secid}&fields=f43,f46,f60,f169,f170,f12,f14"
+    try:
+        d = http_get_json(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}, retries=3, timeout=15)
+        if not d or not d.get("data"):
+            return {}
+        f = d["data"]
+        price = float(f.get("f43") or 0)
+        openp = float(f.get("f46") or 0)
+        preclose = float(f.get("f60") or 0)
+        zdf = float(f.get("f169") or 0)  # 较昨收涨跌幅
+        zdf2 = float(f.get("f170") or 0)  # 较开盘涨跌幅
+        name = f.get("f14") or em_code
+        # 计算较开盘涨跌幅（如果没有现成字段）
+        pct_open = zdf2 if zdf2 else ( (price - openp) / openp * 100 if openp > 0 else zdf)
+        return {
+            code: {
+                "name": name,
+                "price": price,
+                "open": openp,
+                "pct_yest": zdf,     # 较昨收（同花顺盘面显示）
+                "pct_open": pct_open, # 较开盘（推送用）
+                "time": beijing_now().strftime("%Y%m%d%H%M%S"),
+                "high_limit": 0.0,
+                "source": "em_board",
+            }
+        }
+    except Exception:
+        return {}
+
+
 def get_spot_map_special(codes):
-    """获取特殊代码（同花顺概念指数 / A50 期指）实时行情。"""
+    """获取特殊代码（同花顺概念指数 / A50 期指 / 东财涨停板块）实时行情。"""
     if not codes:
         return {}
     result = {}
     for c in codes:
         typ = special_code_type(c)
         if typ == "ths_concept":
+            # 优先东财实时，同花顺备用
+            em_code = THS_TO_EM_BOARD.get(c)
+            if em_code:
+                r = _spot_em_board(c)
+                if r:
+                    result.update(r)
+                    continue
+            # 东财失败时回退同花顺
             result.update(_spot_ths_concept(c))
         elif typ == "a50_futures":
             result.update(_spot_a50_futures(c))
+        elif typ == "em_board":
+            result.update(_spot_em_board(c))
     return result
 
 
@@ -380,10 +436,9 @@ def detect_sentiment_alerts(pool, spot, state, threshold=None):
       - 额外计算板块均值，均值越阈值也推送。
     无限次推送（每次扫描都推，不受状态机限制）。
 
-    数据源限制：883410 等同花顺板块在盘中当日 K 线有时不填「今开」字段，
-    此时 open 退回昨收，basis='prevclose'，上层展示时标注「今开缺失」。
+    数据源：优先东财实时接口（更准），同花顺备用。
     返回 [(sector, code, name, pct, direction, is_avg, basis), ...]
-      pct=较今日开盘价涨跌幅(或兜底较昨收)  basis='open'|'prevclose'
+      pct=较今日开盘价涨跌幅  basis='open'
     """
     out = []
     rule = SECTOR_RULES.get("市场情绪", {})
@@ -399,16 +454,13 @@ def detect_sentiment_alerts(pool, spot, state, threshold=None):
         v = spot.get(code)
         if not v:
             continue
-        cur = v.get("price") or 0.0
-        op = v.get("open") or 0.0
-        # 较今日开盘价；今开缺失(open_fallback)时退回较昨收并标注
-        if op > 0 and not v.get("open_fallback"):
-            pct = (cur - op) / op * 100
-            basis = "open"
-        else:
-            pct = float(v.get("pct") or 0.0)
-            basis = "prevclose"
-        sent.append((code, name, pct, basis))
+        # 优先使用东财接口的 pct_open 字段，否则计算
+        pct = v.get("pct_open")
+        if pct is None:
+            cur = v.get("price") or 0.0
+            op = v.get("open") or 0.0
+            pct = (cur - op) / op * 100 if op > 0 else float(v.get("pct") or 0.0)
+        sent.append((code, name, pct, "open"))
 
     for code, name, pct, basis in sent:
         if abs(pct) >= threshold:
@@ -417,10 +469,9 @@ def detect_sentiment_alerts(pool, spot, state, threshold=None):
 
     if sent:
         avg = sum(p for _, _, p, _ in sent) / len(sent)
-        avg_basis = "open" if all(b == "open" for _, _, _, b in sent) else "prevclose"
         if abs(avg) >= threshold:
             direction = "rise" if avg > 0 else "fall"
-            out.append(("市场情绪", "__avg__", "市场情绪(均值)", avg, direction, True, avg_basis))
+            out.append(("市场情绪", "__avg__", "市场情绪(均值)", avg, direction, True, "open"))
     return out
 
 
