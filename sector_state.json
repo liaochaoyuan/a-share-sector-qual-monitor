@@ -1,10 +1,7 @@
 {
-  "date": "20260821",
+  "date": "",
   "sector_pushed": [],
-  "stock_pushed": [
-    "300308",
-    "001309"
-  ],
+  "stock_pushed": [],
   "sentiment_last_alert": {},
   "sentiment_region": {}
 }
