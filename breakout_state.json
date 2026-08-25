@@ -1,11 +1,11 @@
 {
-  "date": "20260824",
+  "date": "20260825",
   "sector_pushed": [],
   "stock_pushed": [
+    "688090",
+    "300534",
     "600721",
-    "000831",
-    "600010",
-    "002900"
+    "301141"
   ],
   "sentiment_last_alert": {},
   "sentiment_region": {}
