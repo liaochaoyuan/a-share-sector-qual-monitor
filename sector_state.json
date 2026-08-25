@@ -1,10 +1,16 @@
 {
   "date": "20260825",
-  "sector_pushed": [],
+  "sector_pushed": [
+    "共封装光学"
+  ],
   "stock_pushed": [
     "688090",
     "600721",
-    "301141"
+    "301141",
+    "300287",
+    "300149",
+    "301057",
+    "603986"
   ],
   "sentiment_last_alert": {},
   "sentiment_region": {}
