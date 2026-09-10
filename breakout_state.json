@@ -1,7 +1,12 @@
 {
-  "date": "20260909",
-  "sector_pushed": [],
-  "stock_pushed": [],
+  "date": "20260910",
+  "sector_pushed": [
+    "存储芯片"
+  ],
+  "stock_pushed": [
+    "000021",
+    "600667"
+  ],
   "sentiment_last_alert": {},
   "sentiment_region": {}
 }
