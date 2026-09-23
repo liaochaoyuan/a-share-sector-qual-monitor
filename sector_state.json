@@ -1,13 +1,8 @@
 {
-  "date": "20260922",
-  "sector_pushed": [
-    "创新药"
-  ],
+  "date": "20260923",
+  "sector_pushed": [],
   "stock_pushed": [
-    "600664",
-    "600721",
-    "301057",
-    "603986"
+    "301057"
   ],
   "sentiment_last_alert": {},
   "sentiment_region": {}
